@@ -3,35 +3,63 @@ generator client {
 }
 
 datasource db {
-  provider = "postgresql"
+  provider = "sqlite"
   url      = env("DATABASE_URL")
 }
 
-model User {
-  id        String   @id @default(cuid())
-  email     String   @unique
-  name      String?
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  posts     Post[]
+model Game {
+  id              String   @id @default(cuid())
+  status          String   @default("waiting") // waiting, playing, finished
+  currentTurn     Int      @default(0)
+  actionsThisTurn Int      @default(0) // track actions taken this turn
+  playerCount     Int
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+  players         Player[]
+  bones           Bone[]
+  bowls           Bowl[]
+  yardCards       YardCard[]
 }
 
-model Post {
-  id        String   @id @default(cuid())
-  title     String
-  content   String?
-  published Boolean  @default(false)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
-  author    User     @relation(fields: [authorId], references: [id])
-  authorId  String
+model Player {
+  id           String @id @default(cuid())
+  gameId       String
+  name         String
+  icon         String // dog head icon identifier
+  position     Int    // 0-3 for player order
+  yardPosition Int    @default(0) // position in the yard
+  score        Int    @default(0)
+  bonesInHand  Bone[] @relation("PlayerHand")
+  game         Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
 }
 
-model Analytics {
-  id        String   @id @default(cuid())
-  users     Int      @default(0)
-  posts     Int      @default(0)
-  views     Int      @default(0)
-  createdAt DateTime @default(now())
-  updatedAt DateTime @updatedAt
+model Bone {
+  id            String  @id @default(cuid())
+  gameId        String
+  color         String  // red, blue, green, yellow, purple (actual color)
+  uncertainColor String // the alternative color shown on uncertain side
+  position      Int?    // position in yard (null if in hand or bowl)
+  inBowl        Boolean @default(false)
+  revealed      Boolean @default(false) // true if actual color has been revealed
+  playerId      String? // if in player's hand
+  game          Game    @relation(fields: [gameId], references: [id], onDelete: Cascade)
+  player        Player? @relation("PlayerHand", fields: [playerId], references: [id])
+}
+
+model Bowl {
+  id       String @id @default(cuid())
+  gameId   String
+  color    String // red, blue, green, yellow, purple
+  position Int    // distance from dog house (0 = closest)
+  value    Int    // 5, 4, 3, 2, 1 based on position
+  game     Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
+}
+
+model YardCard {
+  id       String @id @default(cuid())
+  gameId   String
+  position Int    // position in the yard
+  type     String // "bone", "bowl", "doghouse"
+  color    String? // for bones and bowls
+  game     Game   @relation(fields: [gameId], references: [id], onDelete: Cascade)
 }

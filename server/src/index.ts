@@ -12,124 +12,80 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-app.get('/api/data', async (req, res) => {
+import { createGame, getGameState, GameSetup, movePlayer, digBone, dropBone, endTurn } from './game';
+
+// Create a new game
+app.post('/api/games', async (req, res) => {
   try {
-    const analytics = await prisma.analytics.findFirst({
-      orderBy: { createdAt: 'desc' }
-    });
-
-    const userCount = await prisma.user.count();
-    const postCount = await prisma.post.count();
-
-    const data = {
-      users: analytics?.users || userCount,
-      posts: analytics?.posts || postCount,
-      views: analytics?.views || 0
-    };
-
-    res.json({
-      message: 'Hello from the backend with database!',
-      timestamp: new Date().toISOString(),
-      data
-    });
+    const setup: GameSetup = req.body;
+    const gameId = await createGame(setup);
+    res.json({ gameId });
   } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Database connection failed' });
+    console.error('Game creation error:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Failed to create game' });
   }
 });
 
-app.get('/api/users', async (req, res) => {
+// Get game state
+app.get('/api/games/:gameId', async (req, res) => {
   try {
-    const users = await prisma.user.findMany({
-      include: {
-        posts: true
-      }
-    });
-    res.json(users);
+    const { gameId } = req.params;
+    const gameState = await getGameState(gameId);
+    res.json(gameState);
   } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Failed to fetch users' });
+    console.error('Get game state error:', error);
+    res.status(404).json({ error: error instanceof Error ? error.message : 'Game not found' });
   }
 });
 
-app.get('/api/posts', async (req, res) => {
+// Move player
+app.post('/api/games/:gameId/move', async (req, res) => {
   try {
-    const posts = await prisma.post.findMany({
-      include: {
-        author: true
-      },
-      orderBy: { createdAt: 'desc' }
-    });
-    res.json(posts);
+    const { gameId } = req.params;
+    const { playerId, spaces } = req.body;
+    await movePlayer(gameId, playerId, spaces);
+    res.json({ success: true });
   } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Failed to fetch posts' });
+    console.error('Move error:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Move failed' });
   }
 });
 
-app.post('/api/users', async (req, res) => {
+// Dig bone
+app.post('/api/games/:gameId/dig', async (req, res) => {
   try {
-    const { email, name } = req.body;
-    const user = await prisma.user.create({
-      data: { email, name }
-    });
-    res.json(user);
+    const { gameId } = req.params;
+    const { playerId, replacementBoneId } = req.body;
+    await digBone(gameId, playerId, replacementBoneId);
+    res.json({ success: true });
   } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Failed to create user' });
+    console.error('Dig error:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Dig failed' });
   }
 });
 
-app.post('/api/posts', async (req, res) => {
+// Drop bone
+app.post('/api/games/:gameId/drop', async (req, res) => {
   try {
-    const { title, content, authorId } = req.body;
-    const post = await prisma.post.create({
-      data: { title, content, authorId },
-      include: { author: true }
-    });
-    res.json(post);
+    const { gameId } = req.params;
+    const { playerId, boneId } = req.body;
+    await dropBone(gameId, playerId, boneId);
+    res.json({ success: true });
   } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Failed to create post' });
+    console.error('Drop error:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Drop failed' });
   }
 });
 
-app.post('/api/analytics', async (req, res) => {
+// End turn
+app.post('/api/games/:gameId/end-turn', async (req, res) => {
   try {
-    const { users, posts, views } = req.body;
-    const analytics = await prisma.analytics.create({
-      data: { users, posts, views }
-    });
-    res.json(analytics);
+    const { gameId } = req.params;
+    await endTurn(gameId);
+    res.json({ success: true });
   } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Failed to create analytics entry' });
-  }
-});
-
-app.delete('/api/users/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    await prisma.user.delete({
-      where: { id }
-    });
-    res.json({ message: 'User deleted successfully' });
-  } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Failed to delete user' });
-  }
-});
-
-app.delete('/api/posts/:id', async (req, res) => {
-  try {
-    const { id } = req.params;
-    await prisma.post.delete({
-      where: { id }
-    });
-    res.json({ message: 'Post deleted successfully' });
-  } catch (error) {
-    console.error('Database error:', error);
-    res.status(500).json({ error: 'Failed to delete post' });
+    console.error('End turn error:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'End turn failed' });
   }
 });
 
