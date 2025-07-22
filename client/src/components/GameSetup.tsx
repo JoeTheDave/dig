@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import toast from 'react-hot-toast';
 
 interface GameSetupProps {
   onGameCreated: (gameId: string) => void;
@@ -44,7 +45,7 @@ export default function GameSetup({ onGameCreated }: GameSetupProps) {
 
   const handleCreateGame = async () => {
     if (playerNames.some(name => !name.trim())) {
-      alert('Please enter names for all players');
+      toast.error('Please enter names for all players');
       return;
     }
 
@@ -63,14 +64,16 @@ export default function GameSetup({ onGameCreated }: GameSetupProps) {
       });
 
       if (!response.ok) {
-        throw new Error('Failed to create game');
+        const errorData = await response.json().catch(() => ({}));
+        throw new Error(errorData.error || 'Failed to create game');
       }
 
       const { gameId } = await response.json();
+      toast.success('Game created successfully!');
       onGameCreated(gameId);
     } catch (error) {
       console.error('Error creating game:', error);
-      alert('Failed to create game. Please try again.');
+      toast.error(error instanceof Error ? error.message : 'Failed to create game. Please try again.');
     } finally {
       setIsCreating(false);
     }

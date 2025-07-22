@@ -1,4 +1,5 @@
 import { useState } from 'react'
+import { Toaster } from 'react-hot-toast'
 import GameSetup from './components/GameSetup'
 import GameBoard from './components/GameBoard'
 
@@ -37,6 +38,16 @@ function App() {
           )}
         </div>
       </div>
+      <Toaster 
+        position="top-right"
+        toastOptions={{
+          duration: 4000,
+          style: {
+            background: '#363636',
+            color: '#fff',
+          },
+        }}
+      />
     </div>
   )
 }

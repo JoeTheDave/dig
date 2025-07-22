@@ -1,4 +1,5 @@
 FROM node:18-alpine AS base
+RUN apk add --no-cache openssl openssl-dev libc6-compat
 
 # Install dependencies for server (including dev deps for build)
 FROM base AS server-deps
@@ -31,8 +32,8 @@ COPY --from=server-deps /app/server/node_modules ./server/node_modules
 # Copy client dependencies
 COPY --from=client-deps /app/client/node_modules ./client/node_modules
 
-# Generate Prisma client for production
-RUN cd server && npx prisma generate
+# Use production schema and generate Prisma client for PostgreSQL
+RUN cd server && cp prisma/schema.prod.prisma prisma/schema.prisma && npx prisma generate
 
 # Build client
 RUN cd client && npm run build

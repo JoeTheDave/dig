@@ -1,4 +1,5 @@
 import { useState, useEffect } from 'react';
+import toast from 'react-hot-toast';
 
 interface GameState {
   id: string;
@@ -6,6 +7,7 @@ interface GameState {
   currentTurn: number;
   actionsThisTurn: number;
   playerCount: number;
+  bowlValues: Record<string, number>;
   players: Array<{
     id: string;
     name: string;
@@ -19,6 +21,11 @@ interface GameState {
       uncertainColor: string;
       revealed: boolean;
     }>;
+    buriedBones: Array<{
+      id: string;
+      color: string;
+      currentValue: number;
+    }>;
   }>;
   bones: Array<{
     id: string;
@@ -27,6 +34,7 @@ interface GameState {
     position: number | null;
     inBowl: boolean;
     revealed: boolean;
+    buriedByPlayerId?: string;
   }>;
   bowls: Array<{
     id: string;
@@ -64,6 +72,8 @@ export default function GameBoard({ gameId }: GameBoardProps) {
   const [animatingCards, setAnimatingCards] = useState<Set<string>>(new Set());
   const [locallyRevealedBones, setLocallyRevealedBones] = useState<Set<string>>(new Set());
   const [movingCards, setMovingCards] = useState<Set<string>>(new Set());
+  const [showTurnTransition, setShowTurnTransition] = useState(false);
+  const [previousTurn, setPreviousTurn] = useState<number | null>(null);
 
   useEffect(() => {
     fetchGameState();
@@ -78,6 +88,14 @@ export default function GameBoard({ gameId }: GameBoardProps) {
         throw new Error('Failed to fetch game state');
       }
       const game = await response.json();
+      
+      // Check for turn change
+      if (previousTurn !== null && previousTurn !== game.currentTurn && game.status === 'playing') {
+        setShowTurnTransition(true);
+        setTimeout(() => setShowTurnTransition(false), 2000);
+      }
+      setPreviousTurn(game.currentTurn);
+      
       setGameState(game);
       // Clear locally revealed bones only for bones that are now revealed in the server state
       setLocallyRevealedBones(prev => {
@@ -99,11 +117,27 @@ export default function GameBoard({ gameId }: GameBoardProps) {
   };
 
 
-  const handleMoveToPosition = async (targetPosition: number) => {
+  const handleMoveToPosition = async (targetCardId: string) => {
     if (!gameState || !currentPlayer) return;
     
-    const spaces = Math.abs(targetPosition - currentPlayer.yardPosition);
-    const direction = targetPosition > currentPlayer.yardPosition ? 1 : -1;
+    // Find the target card
+    const targetCard = gameState.yardCards.find(card => card.id === targetCardId);
+    if (!targetCard) return;
+    
+    // Sort cards by their actual positions to get visual order
+    const sortedCards = [...gameState.yardCards].sort((a, b) => a.position - b.position);
+    
+    // Find visual indices
+    const currentPlayerVisualIndex = sortedCards.findIndex(card => card.position === currentPlayer.yardPosition);
+    const targetCardVisualIndex = sortedCards.findIndex(card => card.id === targetCardId);
+    
+    if (currentPlayerVisualIndex === -1 || targetCardVisualIndex === -1) {
+      toast.error('Invalid move positions');
+      return;
+    }
+    
+    // Calculate movement based on visual positions
+    const spaces = targetCardVisualIndex - currentPlayerVisualIndex;
     
     try {
       const response = await fetch(`/api/games/${gameId}/move`, {
@@ -111,7 +145,7 @@ export default function GameBoard({ gameId }: GameBoardProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           playerId: currentPlayer.id, 
-          spaces: spaces * direction
+          spaces: spaces
         })
       });
       
@@ -122,7 +156,7 @@ export default function GameBoard({ gameId }: GameBoardProps) {
       
       await fetchGameState();
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Move failed');
+      toast.error(err instanceof Error ? err.message : 'Move failed');
     }
   };
 
@@ -135,13 +169,13 @@ export default function GameBoard({ gameId }: GameBoardProps) {
     );
     
     if (!boneCard) {
-      alert('No bone at current position');
+      toast.error('No bone at current position');
       return;
     }
     
     const bone = gameState.bones.find(b => b.position === currentPlayer.yardPosition);
     if (!bone) {
-      alert('Bone not found');
+      toast.error('Bone not found');
       return;
     }
     
@@ -216,7 +250,7 @@ export default function GameBoard({ gameId }: GameBoardProps) {
       }, animationDelay);
       
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Dig failed');
+      toast.error(err instanceof Error ? err.message : 'Dig failed');
       // Clean up state on error
       setAnimatingCards(prev => {
         const newSet = new Set(prev);
@@ -227,14 +261,15 @@ export default function GameBoard({ gameId }: GameBoardProps) {
     }
   };
 
-  const handleDrop = async (boneId: string) => {
+
+  const handleDropAllBones = async (color: string) => {
     if (!gameState || !currentPlayer) return;
     
     try {
-      const response = await fetch(`/api/games/${gameId}/drop`, {
+      const response = await fetch(`/api/games/${gameId}/drop-all`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ playerId: currentPlayer.id, boneId })
+        body: JSON.stringify({ playerId: currentPlayer.id, color })
       });
       
       if (!response.ok) {
@@ -244,7 +279,7 @@ export default function GameBoard({ gameId }: GameBoardProps) {
       
       await fetchGameState();
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'Drop failed');
+      toast.error(err instanceof Error ? err.message : 'Drop failed');
     }
   };
 
@@ -264,7 +299,7 @@ export default function GameBoard({ gameId }: GameBoardProps) {
       
       await fetchGameState();
     } catch (err) {
-      alert(err instanceof Error ? err.message : 'End turn failed');
+      toast.error(err instanceof Error ? err.message : 'End turn failed');
     }
   };
 
@@ -291,31 +326,41 @@ export default function GameBoard({ gameId }: GameBoardProps) {
           0% { transform: translateX(0); }
           100% { transform: translateX(var(--target-x)); }
         }
+        @keyframes droppablePulse {
+          0% { transform: scale(1); opacity: 1; }
+          50% { transform: scale(1.1); opacity: 0.8; }
+          100% { transform: scale(1); opacity: 1; }
+        }
+        @keyframes turnFadeIn {
+          0% { opacity: 0; transform: scale(0.8); }
+          20% { opacity: 1; transform: scale(1.1); }
+          80% { opacity: 1; transform: scale(1); }
+          100% { opacity: 0; transform: scale(0.9); }
+        }
+        @keyframes moveableGlow {
+          0% { box-shadow: 0 0 8px rgba(255, 215, 0, 0.6), 0 0 16px rgba(255, 215, 0, 0.3); }
+          50% { box-shadow: 0 0 12px rgba(255, 215, 0, 0.8), 0 0 24px rgba(255, 215, 0, 0.4); }
+          100% { box-shadow: 0 0 8px rgba(255, 215, 0, 0.6), 0 0 16px rgba(255, 215, 0, 0.3); }
+        }
       `}</style>
-      <div className="mb-6">
-        <h2 className="text-2xl font-semibold text-gray-800 mb-2">
-          🐕 DIG Game - {gameState.status}
-        </h2>
-        <p className="text-gray-600">
-          Current Turn: <span className="font-semibold">{currentPlayer?.name}</span>
-        </p>
-        <p className="text-gray-600">
-          Actions Used: <span className="font-semibold">{gameState.actionsThisTurn}/3</span>
-        </p>
-      </div>
 
 
       {/* Game Board - All elements in one absolute container */}
       <div className="mb-6">
-        <h3 className="text-lg font-semibold mb-3">The Yard</h3>
         <div className="relative w-full" style={{ height: '500px', width: '1200px' }}>
           {/* Cards */}
           {gameState.yardCards.map((card) => {
+            // Calculate visual positions for movement validation
+            const sortedCards = [...gameState.yardCards].sort((a, b) => a.position - b.position);
+            const currentPlayerVisualIndex = currentPlayer ? sortedCards.findIndex(c => c.position === currentPlayer.yardPosition) : -1;
+            const cardVisualIndex = sortedCards.findIndex(c => c.id === card.id);
+            const visualDistance = Math.abs(cardVisualIndex - currentPlayerVisualIndex);
+            
             const canMoveHere = gameState.status === 'playing' && 
               currentPlayer && 
               gameState.actionsThisTurn < 3 &&
-              Math.abs(card.position - currentPlayer.yardPosition) <= (4 - currentPlayer.bonesInHand.length) &&
-              card.position !== currentPlayer.yardPosition;
+              visualDistance <= (4 - currentPlayer.bonesInHand.length) &&
+              cardVisualIndex !== currentPlayerVisualIndex;
             
             const isFlipping = flippingCards.has(card.id);
             const isAnimating = animatingCards.has(card.id);
@@ -330,14 +375,14 @@ export default function GameBoard({ gameId }: GameBoardProps) {
             return (
               <div
                 key={card.id}
-                onClick={canMoveHere ? () => handleMoveToPosition(card.position) : undefined}
+                onClick={canMoveHere ? () => handleMoveToPosition(card.id) : undefined}
                 className={`
                   absolute w-12 h-60 border-2 rounded flex flex-col items-center justify-center text-xs cursor-pointer
-                  transition-all duration-500 ease-in-out
+                  transition-all duration-300 ease-in-out
                   ${card.type === 'doghouse' ? 'bg-yellow-200 border-yellow-400' : ''}
                   ${card.type === 'bowl' ? COLOR_STYLES[card.color || ''] + ' border-gray-400' : ''}
                   ${card.type === 'bone' ? 'bg-gray-400 border-gray-600' : ''}
-                  ${canMoveHere ? 'bg-opacity-70 shadow-lg transform scale-105' : 'border-gray-300'}
+                  ${canMoveHere ? 'border-yellow-400 border-3 hover:scale-105' : 'border-gray-300'}
                   ${isAnimating ? 'z-10 animate-pulse' : ''}
                   ${isMoving ? 'z-10' : ''}
                 `}
@@ -346,7 +391,7 @@ export default function GameBoard({ gameId }: GameBoardProps) {
                   top: '0px',
                   '--target-x': `${targetX}px`,
                   transform: isFlipping ? 'rotateY(180deg)' : isAnimating ? `translateY(120px) scale(0.6) translateX(${200 + (gameState.currentTurn * 250) - (card.position * 52)}px)` : 'none',
-                  animation: isFlipping ? 'flip 0.6s ease-in-out' : isAnimating ? 'moveToHand 0.5s ease-in-out forwards' : isMoving ? 'slideToPosition 0.5s ease-in-out forwards' : 'none'
+                  animation: isFlipping ? 'flip 0.6s ease-in-out' : isAnimating ? 'moveToHand 0.5s ease-in-out forwards' : isMoving ? 'slideToPosition 0.5s ease-in-out forwards' : canMoveHere ? 'moveableGlow 2s ease-in-out infinite' : 'none'
                 } as React.CSSProperties}
               >
                 {card.type === 'doghouse' && <div className="text-3xl">🏠</div>}
@@ -416,23 +461,92 @@ export default function GameBoard({ gameId }: GameBoardProps) {
             >
               <div className="font-semibold text-sm">{player.name}</div>
               <div className="text-xs text-gray-600">Score: {player.score}</div>
-              <div className="text-xs text-gray-600">Position: {player.yardPosition}</div>
+              {playerIndex === gameState.currentTurn && (
+                <div className="text-xs text-green-600 font-semibold">
+                  Actions: {gameState.actionsThisTurn}/3
+                </div>
+              )}
               <div className="text-xs text-gray-600 mb-2">
                 Bones in hand: {player.bonesInHand.length}/3
               </div>
               {player.bonesInHand.length > 0 && (
-                <div className="flex gap-1 flex-wrap">
-                  {player.bonesInHand.map(bone => (
-                    <div
-                      key={bone.id}
-                      className={`w-6 h-6 rounded ${COLOR_STYLES[bone.color]} border border-gray-300 flex items-center justify-center text-xs text-white font-bold`}
-                      title={`${bone.color} bone${bone.revealed ? ' (revealed)' : ` or ${bone.uncertainColor}?`}`}
-                    >
-                      {bone.revealed ? bone.color[0].toUpperCase() : '?'}
-                    </div>
-                  ))}
+                <div>
+                  <div className="flex gap-1 flex-wrap mb-2">
+                    {player.bonesInHand.map(bone => {
+                      // Check if this bone can be dropped (player is on matching bowl)
+                      const canDrop = playerIndex === gameState.currentTurn && 
+                        gameState.actionsThisTurn < 3 &&
+                        gameState.yardCards.some(card => 
+                          card.type === 'bowl' && 
+                          card.position === currentPlayer?.yardPosition && 
+                          card.color === bone.color
+                        );
+                      
+                      return (
+                        <div
+                          key={bone.id}
+                          className={`w-6 h-6 rounded ${COLOR_STYLES[bone.color]} border border-gray-300 flex items-center justify-center text-xs text-white font-bold ${
+                            canDrop ? 'animate-pulse' : ''
+                          }`}
+                          style={{
+                            animation: canDrop ? 'droppablePulse 1s infinite' : 'none'
+                          }}
+                          title={`${bone.color} bone${bone.revealed ? ' (revealed)' : ` or ${bone.uncertainColor}?`}${canDrop ? ' - Can drop!' : ''}`}
+                        >
+                          {bone.revealed ? bone.color[0].toUpperCase() : '?'}
+                        </div>
+                      );
+                    })}
+                  </div>
+                  
+                  {/* Drop button for matching bones */}
+                  {(() => {
+                    if (playerIndex !== gameState.currentTurn || gameState.actionsThisTurn >= 3) return null;
+                    
+                    // Find bones that can be dropped
+                    const droppableBones = player.bonesInHand.filter(bone => 
+                      gameState.yardCards.some(card => 
+                        card.type === 'bowl' && 
+                        card.position === currentPlayer?.yardPosition && 
+                        card.color === bone.color
+                      )
+                    );
+                    
+                    if (droppableBones.length === 0) return null;
+                    
+                    return (
+                      <button
+                        onClick={() => handleDropAllBones(droppableBones[0].color)}
+                        className={`px-2 py-1 text-xs text-white rounded hover:opacity-80 ${COLOR_STYLES[droppableBones[0].color]}`}
+                      >
+                        Drop {droppableBones.length} {droppableBones[0].color} bone{droppableBones.length > 1 ? 's' : ''}
+                      </button>
+                    );
+                  })()}
                 </div>
               )}
+              
+              {/* Buried Bones Section */}
+              {(() => {
+                if (player.buriedBones.length === 0) return null;
+                
+                return (
+                  <div className="mt-3 pt-2 border-t border-gray-200">
+                    <div className="text-xs text-gray-600 mb-1">Buried Bones:</div>
+                    <div className="flex gap-1 flex-wrap">
+                      {player.buriedBones.map(bone => (
+                        <div
+                          key={bone.id}
+                          className={`w-6 h-6 rounded ${COLOR_STYLES[bone.color]} border border-gray-300 opacity-60 flex items-center justify-center text-xs text-white font-bold relative`}
+                          title={`${bone.color} bone - ${bone.currentValue} point${bone.currentValue !== 1 ? 's' : ''}`}
+                        >
+                          {bone.currentValue}
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })()}
             </div>
           ))}
         </div>
@@ -465,25 +579,6 @@ export default function GameBoard({ gameId }: GameBoardProps) {
             </button>
           </div>
 
-          {/* Drop Action */}
-          {currentPlayer && currentPlayer.bonesInHand.length > 0 && (
-            <div className="mb-4">
-              <h4 className="font-medium mb-2">Drop Bone (reveals actual color)</h4>
-              <div className="flex gap-2">
-                {currentPlayer.bonesInHand.map(bone => (
-                  <button
-                    key={bone.id}
-                    onClick={() => handleDrop(bone.id)}
-                    disabled={gameState.actionsThisTurn >= 3}
-                    className={`px-3 py-2 text-white rounded hover:opacity-80 disabled:opacity-30 disabled:cursor-not-allowed flex flex-col items-center ${COLOR_STYLES[bone.color]}`}
-                  >
-                    <div>{bone.color}</div>
-                    <div className="text-xs">or {bone.uncertainColor}?</div>
-                  </button>
-                ))}
-              </div>
-            </div>
-          )}
 
           {/* End Turn */}
           <div className="mb-4">
@@ -568,6 +663,20 @@ export default function GameBoard({ gameId }: GameBoardProps) {
                 Put Back (Don't Take)
               </button>
             </div>
+          </div>
+        </div>
+      )}
+
+      {/* Turn Transition Overlay */}
+      {showTurnTransition && currentPlayer && (
+        <div className="fixed inset-0 flex items-center justify-center z-50 pointer-events-none">
+          <div
+            className="bg-green-600 text-white px-8 py-4 rounded-lg shadow-lg text-xl font-bold"
+            style={{
+              animation: 'turnFadeIn 2s ease-in-out forwards'
+            }}
+          >
+            {currentPlayer.icon} {currentPlayer.name}'s Turn!
           </div>
         </div>
       )}

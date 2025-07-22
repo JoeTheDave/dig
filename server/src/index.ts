@@ -12,7 +12,7 @@ const PORT = process.env.PORT || 3001;
 app.use(cors());
 app.use(express.json());
 
-import { createGame, getGameState, GameSetup, movePlayer, digBone, dropBone, endTurn } from './game';
+import { createGame, getGameState, GameSetup, movePlayer, digBone, dropBone, dropAllBones, endTurn } from './game';
 
 // Create a new game
 app.post('/api/games', async (req, res) => {
@@ -73,6 +73,19 @@ app.post('/api/games/:gameId/drop', async (req, res) => {
     res.json({ success: true });
   } catch (error) {
     console.error('Drop error:', error);
+    res.status(400).json({ error: error instanceof Error ? error.message : 'Drop failed' });
+  }
+});
+
+// Drop all bones of a color
+app.post('/api/games/:gameId/drop-all', async (req, res) => {
+  try {
+    const { gameId } = req.params;
+    const { playerId, color } = req.body;
+    await dropAllBones(gameId, playerId, color);
+    res.json({ success: true });
+  } catch (error) {
+    console.error('Drop all error:', error);
     res.status(400).json({ error: error instanceof Error ? error.message : 'Drop failed' });
   }
 });

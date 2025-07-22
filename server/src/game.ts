@@ -164,6 +164,67 @@ async function initializeYard(gameId: string): Promise<void> {
   });
 }
 
+async function calculateDynamicScores(gameId: string) {
+  const game = await prisma.game.findUnique({
+    where: { id: gameId },
+    include: {
+      players: {
+        include: {
+          bonesInHand: true
+        }
+      },
+      bones: true,
+      bowls: true,
+      yardCards: { orderBy: { position: 'asc' } }
+    }
+  });
+
+  if (!game) {
+    throw new Error('Game not found');
+  }
+
+  // Find bowl positions in the current yard layout
+  const bowlCards = game.yardCards.filter(card => card.type === 'bowl');
+  
+  // Calculate current bowl values based on distance from dog house
+  const dogHouseCard = game.yardCards.find(card => card.type === 'doghouse');
+  if (!dogHouseCard) {
+    throw new Error('Dog house not found');
+  }
+
+  // Sort bowls by distance from dog house (closer = higher value)
+  const bowlValues = bowlCards
+    .map(bowlCard => ({
+      color: bowlCard.color!,
+      position: bowlCard.position,
+      distanceFromDogHouse: Math.abs(dogHouseCard.position - bowlCard.position)
+    }))
+    .sort((a, b) => a.distanceFromDogHouse - b.distanceFromDogHouse)
+    .reduce((acc, bowl, index) => {
+      acc[bowl.color] = 5 - index; // Closest = 5, next = 4, etc.
+      return acc;
+    }, {} as Record<string, number>);
+
+  // Calculate each player's current score
+  const playerScores = game.players.map(player => {
+    const buriedBones = game.bones.filter(bone => bone.inBowl && bone.buriedByPlayerId === player.id);
+    const totalScore = buriedBones.reduce((score, bone) => {
+      return score + (bowlValues[bone.color] || 0);
+    }, 0);
+    
+    return {
+      playerId: player.id,
+      score: totalScore,
+      buriedBones: buriedBones.map(bone => ({
+        ...bone,
+        currentValue: bowlValues[bone.color] || 0
+      }))
+    };
+  });
+
+  return { bowlValues, playerScores };
+}
+
 export async function getGameState(gameId: string) {
   const game = await prisma.game.findUnique({
     where: { id: gameId },
@@ -184,7 +245,24 @@ export async function getGameState(gameId: string) {
     throw new Error('Game not found');
   }
 
-  return game;
+  // Calculate dynamic scores
+  const { bowlValues, playerScores } = await calculateDynamicScores(gameId);
+
+  // Add calculated scores and bowl values to the response
+  const gameWithDynamicScores = {
+    ...game,
+    bowlValues,
+    players: game.players.map(player => {
+      const playerScore = playerScores.find(ps => ps.playerId === player.id);
+      return {
+        ...player,
+        score: playerScore?.score || 0,
+        buriedBones: playerScore?.buriedBones || []
+      };
+    })
+  };
+
+  return gameWithDynamicScores;
 }
 
 export async function movePlayer(gameId: string, playerId: string, spaces: number): Promise<void> {
@@ -214,8 +292,21 @@ export async function movePlayer(gameId: string, playerId: string, spaces: numbe
     throw new Error(`Can only move ${maxMovement} spaces with ${bonesInHand} bones in hand`);
   }
 
-  // Move player in yard (can go backward or forward)
-  const newPosition = Math.max(0, Math.min(player.yardPosition + spaces, game.yardCards.length - 1));
+  // Get sorted cards to determine visual positions
+  const sortedCards = game.yardCards.sort((a, b) => a.position - b.position);
+  
+  // Find current player's visual index
+  const currentVisualIndex = sortedCards.findIndex(card => card.position === player.yardPosition);
+  
+  if (currentVisualIndex === -1) {
+    throw new Error('Player position not found in yard');
+  }
+  
+  // Calculate new visual index
+  const newVisualIndex = Math.max(0, Math.min(currentVisualIndex + spaces, sortedCards.length - 1));
+  
+  // Get the actual database position at the new visual index
+  const newPosition = sortedCards[newVisualIndex].position;
   
   await prisma.player.update({
     where: { id: player.id },
@@ -286,6 +377,35 @@ export async function digBone(gameId: string, playerId: string, replacementBoneI
     await prisma.yardCard.delete({
       where: { id: boneCard.id }
     });
+
+    // Check if player is now stranded (no card at their position)
+    const updatedGame = await getGameState(gameId);
+    const cardAtPlayerPosition = updatedGame.yardCards.find(card => card.position === player.yardPosition);
+    
+    if (!cardAtPlayerPosition) {
+      // Player is stranded! Move them to the nearest card
+      const sortedCards = updatedGame.yardCards.sort((a, b) => a.position - b.position);
+      
+      if (sortedCards.length > 0) {
+        // Find the closest card to the player's current position
+        let closestCard = sortedCards[0];
+        let closestDistance = Math.abs(closestCard.position - player.yardPosition);
+        
+        for (const card of sortedCards) {
+          const distance = Math.abs(card.position - player.yardPosition);
+          if (distance < closestDistance) {
+            closestCard = card;
+            closestDistance = distance;
+          }
+        }
+        
+        // Move player to the closest card
+        await prisma.player.update({
+          where: { id: player.id },
+          data: { yardPosition: closestCard.position }
+        });
+      }
+    }
   }
 
   // Handle replacement bone logic
@@ -329,6 +449,9 @@ export async function digBone(gameId: string, playerId: string, replacementBoneI
       const leftmostBone = leftmostCard.type === 'bone' ? 
         game.bones.find(b => b.position === originalLeftmostPosition) : null;
       
+      // Check if any players are standing on the leftmost card that's about to be moved
+      const playersOnLeftmostCard = game.players.filter(p => p.yardPosition === originalLeftmostPosition);
+      
       // Move the leftmost card to the dig position first
       await prisma.yardCard.update({
         where: { id: leftmostCard.id },
@@ -341,6 +464,28 @@ export async function digBone(gameId: string, playerId: string, replacementBoneI
           where: { id: leftmostBone.id },
           data: { position: player.yardPosition }
         });
+      }
+      
+      // Move any players who were on the leftmost card to the new leftmost position
+      if (playersOnLeftmostCard.length > 0) {
+        // Find the new leftmost card after this one is moved
+        const remainingCards = game.yardCards.filter(card => 
+          card.id !== leftmostCard.id && card.position < player.yardPosition
+        );
+        
+        if (remainingCards.length > 0) {
+          const newLeftmostCard = remainingCards.reduce((leftmost, card) => 
+            card.position < leftmost.position ? card : leftmost
+          );
+          
+          // Move all players who were on the moved card to the new leftmost position
+          for (const playerOnCard of playersOnLeftmostCard) {
+            await prisma.player.update({
+              where: { id: playerOnCard.id },
+              data: { yardPosition: newLeftmostCard.position }
+            });
+          }
+        }
       }
       
       // That's it! No need to shift other cards - just leave the leftmost position empty
@@ -393,26 +538,80 @@ export async function dropBone(gameId: string, playerId: string, boneId: string)
     throw new Error('No matching bowl at current position');
   }
 
-  // Calculate score
-  const bowl = game.bowls.find(b => b.color === bone.color);
-  const points = bowl?.value || 0;
-
-  // Update player score
-  await prisma.player.update({
-    where: { id: player.id },
-    data: { score: { increment: points } }
-  });
+  // Note: Player score will be calculated dynamically based on current bowl positions
 
   // Mark bone as in bowl and remove from hand
   await prisma.bone.update({
     where: { id: bone.id },
     data: {
       inBowl: true,
-      playerId: null
+      playerId: null,
+      buriedByPlayerId: player.id
     }
   });
 
   // Increment action count
+  const newActionCount = game.actionsThisTurn + 1;
+  await prisma.game.update({
+    where: { id: gameId },
+    data: { actionsThisTurn: newActionCount }
+  });
+
+  // Auto-end turn if 3 actions reached
+  if (newActionCount >= 3) {
+    await endTurn(gameId);
+  }
+}
+
+export async function dropAllBones(gameId: string, playerId: string, color: string): Promise<void> {
+  const game = await getGameState(gameId);
+  const player = game.players.find(p => p.id === playerId);
+  
+  if (!player) {
+    throw new Error('Player not found');
+  }
+
+  if (game.players[game.currentTurn].id !== playerId) {
+    throw new Error('Not your turn');
+  }
+
+  if (game.actionsThisTurn >= 3) {
+    throw new Error('Maximum 3 actions per turn');
+  }
+
+  // Find all bones of the specified color in player's hand
+  const bonesToDrop = player.bonesInHand.filter(b => b.color === color);
+  
+  if (bonesToDrop.length === 0) {
+    throw new Error('No bones of that color in hand');
+  }
+
+  // Check if there's a matching bowl at current position
+  const bowlCard = game.yardCards.find(card => 
+    card.type === 'bowl' && 
+    card.position === player.yardPosition && 
+    card.color === color
+  );
+
+  if (!bowlCard) {
+    throw new Error('No matching bowl at current position');
+  }
+
+  // Note: Player score will be calculated dynamically based on current bowl positions
+
+  // Mark all bones as in bowl and remove from hand
+  for (const bone of bonesToDrop) {
+    await prisma.bone.update({
+      where: { id: bone.id },
+      data: {
+        inBowl: true,
+        playerId: null,
+        buriedByPlayerId: player.id
+      }
+    });
+  }
+
+  // Increment action count (dropping all bones of a color counts as one action)
   const newActionCount = game.actionsThisTurn + 1;
   await prisma.game.update({
     where: { id: gameId },
